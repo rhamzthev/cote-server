@@ -69,38 +69,58 @@ app.get("/auth/callback", async (req, res) => {
   const { code, state } = req.query;
 
   if (!code) {
-    return res.status(400).send("Missing authorization code");
+    return res.status(400).json({ error: "Missing authorization code" });
+  }
+
+  // Validate state parameter to prevent CSRF attacks
+  if (!state) {
+    return res.status(400).json({ error: "Missing state parameter" });
   }
 
   try {
     const { tokens } = await oauth2Client.getToken(code);
+    
+    // Validate tokens
+    if (!tokens.access_token || !tokens.refresh_token) {
+      throw new Error("Invalid token response from Google");
+    }
+
     oauth2Client.setCredentials(tokens);
 
-    // Set tokens as HTTP-only cookies
-    res.cookie("accessToken", tokens.access_token, {
+    // Set tokens as HTTP-only cookies with appropriate domain
+    const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 3600000, // 1 hour
-      domain: "localhost", // Important for local development
       path: "/",
+      domain: process.env.NODE_ENV === "production" ? ".rhamzthev.com" : "localhost",
+    };
+
+    res.cookie("accessToken", tokens.access_token, {
+      ...cookieOptions,
+      maxAge: 3600000, // 1 hour
     });
 
     res.cookie("refreshToken", tokens.refresh_token, {
-      httpOnly: true,
-      secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      ...cookieOptions,
       maxAge: 30 * 24 * 3600000, // 30 days
-      domain: "localhost", // Important for local development
-      path: "/",
     });
+
+    // Set security headers
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-XSS-Protection", "1; mode=block");
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
 
     // Redirect back to the original URL stored in state parameter
     const returnUrl = state || '/';
     res.redirect(`${frontendUrl}${returnUrl}`);
   } catch (error) {
     console.error("Error during OAuth callback:", error);
-    res.status(500).send("Authentication failed");
+    res.status(500).json({ 
+      error: "Authentication failed",
+      message: process.env.NODE_ENV === "production" ? "Internal server error" : error.message
+    });
   }
 });
 
@@ -119,20 +139,35 @@ app.post("/api/auth/refresh", async (req, res) => {
 
     const { credentials } = await oauth2Client.refreshAccessToken();
     
-    // Set the new access token cookie
-    res.cookie("accessToken", credentials.access_token, {
+    if (!credentials.access_token) {
+      throw new Error("Invalid token response from Google");
+    }
+
+    // Set the new access token cookie with appropriate domain
+    const cookieOptions = {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 3600000, // 1 hour
-      domain: "localhost", // Important for local development
       path: "/",
-    });
+      domain: process.env.NODE_ENV === "production" ? ".rhamzthev.com" : "localhost",
+      maxAge: 3600000, // 1 hour
+    };
+
+    res.cookie("accessToken", credentials.access_token, cookieOptions);
+
+    // Set security headers
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.setHeader("X-Frame-Options", "DENY");
+    res.setHeader("X-XSS-Protection", "1; mode=block");
+    res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
 
     res.json({ success: true });
   } catch (error) {
     console.error("Error refreshing token:", error);
-    res.status(401).json({ error: "Failed to refresh token" });
+    res.status(401).json({ 
+      error: "Failed to refresh token",
+      message: process.env.NODE_ENV === "production" ? "Authentication failed" : error.message
+    });
   }
 });
 
