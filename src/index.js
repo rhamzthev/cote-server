@@ -27,6 +27,11 @@ app.use(
 app.use(express.json());
 app.use(cookieParser());
 
+// Ping endpoint for health checks
+app.get("/ping", (req, res) => {
+  res.json({ pong: true, timestamp: new Date().toISOString() });
+});
+
 //#region UNAUTHORIZED ROUTES
 // Generate Google OAuth URL with Drive scopes
 app.get("/auth/google/url", (req, res) => {
