@@ -139,7 +139,7 @@ app.post("/api/auth/refresh", async (req, res) => {
 // Check auth status
 app.get("/api/auth/status", (req, res) => {
   if (!req.cookies) {
-    return res.status(401).send();
+    return res.status(401).json({ error: "No cookies found" });
   }
 
   const accessToken = req.cookies.accessToken;
@@ -148,7 +148,7 @@ app.get("/api/auth/status", (req, res) => {
   if (accessToken && refreshToken) {
     res.status(200).send();
   } else {
-    res.status(401).send();
+    res.status(401).json({ error: "No access token or refresh token found" });
   }
 });
 
