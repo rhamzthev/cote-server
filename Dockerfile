@@ -32,7 +32,10 @@ USER node
 COPY . .
 
 # Expose the port that the application listens on.
-EXPOSE 3000
+EXPOSE 80 443
+
+# Add healthcheck
+HEALTHCHECK CMD curl -f http://localhost:80/ping || exit 1
 
 # Run the application.
 CMD npm start

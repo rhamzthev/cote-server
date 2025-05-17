@@ -3,23 +3,32 @@ import { google } from "googleapis";
 import dotenv from "dotenv";
 import cors from "cors";
 import cookieParser from "cookie-parser";
+import https from "https";
+import http from "http";
+import fs from "fs";
+
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3000;
-const frontendUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+const isProduction = process.env.NODE_ENV === "production";
+const frontendUrl = isProduction 
+  ? "https://cote.rhamzthev.com"
+  : "http://localhost:5173";
+
 // Google OAuth2 configuration
 const oauth2Client = new google.auth.OAuth2(
   process.env.GOOGLE_CLOUD_CLIENT_ID,
   process.env.GOOGLE_CLOUD_CLIENT_SECRET,
-  process.env.GOOGLE_REDIRECT_URI
+  isProduction 
+    ? "https://api.cote.rhamzthev.com/auth/callback"
+    : "http://localhost:8080/auth/callback"
 );
 
 // Enable CORS for all routes
 app.use(
   cors({
-    origin: frontendUrl, // Vite's default port
-    credentials: true, // Allow cookies
+    origin: frontendUrl,
+    credentials: true,
   })
 );
 
@@ -373,6 +382,41 @@ app.get("/api/drive/files/:id", async (req, res) => {
 
 //#endregion
 
-app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-});
+// SSL Configuration
+let sslOptions;
+if (isProduction) {
+  sslOptions = {
+    key: fs.readFileSync("/etc/letsencrypt/live/api.cote.rhamzthev.com/privkey.pem"),
+    cert: fs.readFileSync("/etc/letsencrypt/live/api.cote.rhamzthev.com/fullchain.pem"),
+  };
+} else {
+  sslOptions = {
+    key: fs.readFileSync("./localhost/localhost-key.pem"),
+    cert: fs.readFileSync("./localhost/localhost.pem"),
+  };
+}
+
+// Create HTTP and HTTPS servers
+const httpServer = http.createServer(app);
+const httpsServer = https.createServer(sslOptions, app);
+
+// Start servers based on environment
+if (isProduction) {
+  // Production: Listen on both HTTP and HTTPS
+  httpServer.listen(80, () => {
+    console.log(`HTTP Server running on port 80`);
+  });
+
+  httpsServer.listen(443, () => {
+    console.log(`HTTPS Server running on port 443`);
+  });
+} else {
+  // Development: Listen on both HTTP and HTTPS
+  httpServer.listen(8080, () => {
+    console.log(`Development HTTP server running on port 8080`);
+  });
+  
+  httpsServer.listen(8443, () => {
+    console.log(`Development HTTPS server running on port 8443`);
+  });
+}

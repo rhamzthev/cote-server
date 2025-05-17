@@ -10,13 +10,6 @@ env:
   DOCKERHUB_ACCESS_TOKEN: ${{ secrets.DOCKERHUB_ACCESS_TOKEN }}
   DOCKERHUB_REPOSITORY: ${{ secrets.DOCKERHUB_REPOSITORY }}
 
-  PORT: ${{ secrets.PORT }}
-  GOOGLE_CLOUD_CLIENT_ID: ${{ secrets.GOOGLE_CLOUD_CLIENT_ID }}
-  GOOGLE_CLOUD_CLIENT_SECRET: ${{ secrets.GOOGLE_CLOUD_CLIENT_SECRET }}
-  GOOGLE_REDIRECT_URI: ${{ secrets.GOOGLE_REDIRECT_URI }}
-
-
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -55,9 +48,11 @@ jobs:
             # Log in to DockerHub
             sudo docker login -u $DOCKERHUB_USERNAME -p $DOCKERHUB_ACCESS_TOKEN
             
-            # Delete all containers and images
-            sudo docker compose rm -fsv
-            sudo docker rmi -f $(docker images -aq)
+            # Stop and remove only the containers defined in the compose file
+            sudo docker compose down --remove-orphans
+            
+            # Remove only the images used by this application
+            sudo docker rmi -f $(docker images -q ${DOCKERHUB_USERNAME}/${DOCKERHUB_REPOSITORY}:latest) || true
 
             # Start the containers using Docker Compose
             sudo docker compose up -d
