@@ -187,6 +187,40 @@ app.get("/api/auth/status", (req, res) => {
   }
 });
 
+// Get current user
+app.get("/api/auth/user", async (req, res) => {
+  const accessToken = req.cookies.accessToken;
+
+  if (!accessToken) {
+    return res.status(401).json({ error: "No access token found" });
+  }
+
+  try {
+    oauth2Client.setCredentials({ access_token: accessToken });
+    
+    const oauth2 = google.oauth2({
+      version: 'v2',
+      auth: oauth2Client
+    });
+
+    // Get user info from Google
+    const userInfo = await oauth2.userinfo.get();
+    
+    res.json({
+      id: userInfo.data.id,
+      email: userInfo.data.email,
+      name: userInfo.data.name,
+      picture: userInfo.data.picture
+    });
+  } catch (error) {
+    console.error("Error fetching user info:", error);
+    res.status(500).json({ 
+      error: "Failed to fetch user information",
+      message: process.env.NODE_ENV === "production" ? "Internal server error" : error.message
+    });
+  }
+});
+
 // Logout endpoint
 app.post("/api/auth/logout", (req, res) => {
   res.clearCookie("accessToken");
