@@ -48,17 +48,20 @@ app.get("/auth/google/url", (req, res) => {
   const scopes = [
     "https://www.googleapis.com/auth/drive.file", // Access to files created by the app
     "https://www.googleapis.com/auth/drive.install", // Access to install the app
+    "https://www.googleapis.com/auth/userinfo.profile", // Access to user profile info
+    "https://www.googleapis.com/auth/userinfo.email", // Access to user email
   ];
 
-  // Get the return URL from query params, default to frontend root
-  const returnUrl = req.query.returnUrl || '/';
+  // Get the return URL and login hint from query params
+  const { returnUrl = '/', login_hint } = req.query;
 
   const authUrl = oauth2Client.generateAuthUrl({
     access_type: "offline",
     scope: scopes,
     include_granted_scopes: true,
     prompt: "consent", // Force consent screen to ensure we get refresh token
-    state: returnUrl // Store the return URL in state parameter
+    state: returnUrl, // Store the return URL in state parameter
+    login_hint: login_hint || undefined, // Pass user hint to Google
   });
 
   res.json({ url: authUrl });
@@ -171,24 +174,8 @@ app.post("/api/auth/refresh", async (req, res) => {
   }
 });
 
-// Check auth status
-app.get("/api/auth/status", (req, res) => {
-  if (!req.cookies) {
-    return res.status(401).json({ error: "No cookies found" });
-  }
-
-  const accessToken = req.cookies.accessToken;
-  const refreshToken = req.cookies.refreshToken;
-
-  if (accessToken && refreshToken) {
-    res.status(200).send();
-  } else {
-    res.status(401).json({ error: "No access token or refresh token found" });
-  }
-});
-
-// Get current user
-app.get("/api/auth/user", async (req, res) => {
+// Check auth status and return user profile
+app.get("/api/auth/status", async (req, res) => {
   const accessToken = req.cookies.accessToken;
 
   if (!accessToken) {
@@ -197,26 +184,33 @@ app.get("/api/auth/user", async (req, res) => {
 
   try {
     oauth2Client.setCredentials({ access_token: accessToken });
-    
+
     const oauth2 = google.oauth2({
       version: 'v2',
       auth: oauth2Client
     });
 
-    // Get user info from Google
-    const userInfo = await oauth2.userinfo.get();
-    
+    const { data: userInfo } = await oauth2.userinfo.get();
+
+    // The frontend expects `sub` for the user ID
     res.json({
-      id: userInfo.data.id,
-      email: userInfo.data.email,
-      name: userInfo.data.name,
-      picture: userInfo.data.picture
+      sub: userInfo.id,
+      id: userInfo.id,
+      email: userInfo.email,
+      name: userInfo.name,
+      picture: userInfo.picture
     });
   } catch (error) {
-    console.error("Error fetching user info:", error);
-    res.status(500).json({ 
+    console.error("Error fetching user info for status check:", error);
+    // Mimic error structure from the old /api/auth/user endpoint for consistency
+    if (error.code === 401 || error.code === 403) {
+      return res.status(401).json({
+        error: "Authentication failed",
+        message: "Invalid or expired access token.",
+      });
+    }
+    res.status(500).json({
       error: "Failed to fetch user information",
-      message: process.env.NODE_ENV === "production" ? "Internal server error" : error.message
     });
   }
 });
@@ -232,8 +226,8 @@ app.post("/api/auth/logout", (req, res) => {
 
 //#region AUTHORIZED ROUTES
 
-// Get file star status
-app.get("/api/drive/files/:id/star", async (req, res) => {
+// Middleware to check for authentication and set up API clients
+const authMiddleware = (req, res, next) => {
   const accessToken = req.cookies.accessToken;
 
   if (!accessToken) {
@@ -242,13 +236,21 @@ app.get("/api/drive/files/:id/star", async (req, res) => {
 
   try {
     oauth2Client.setCredentials({ access_token: accessToken });
-    
-    const drive = google.drive({
-      version: "v3",
-      auth: oauth2Client,
-    });
+    req.drive = google.drive({ version: "v3", auth: oauth2Client });
+    next();
+  } catch (error) {
+    console.error("Authentication middleware error:", error);
+    return res.status(401).json({ error: "Invalid token" });
+  }
+};
 
-    const response = await drive.files.get({
+// Apply the middleware to all /api/drive routes
+app.use('/api/drive', authMiddleware);
+
+// Get file star status
+app.get("/api/drive/files/:id/star", async (req, res) => {
+  try {
+    const response = await req.drive.files.get({
       fileId: req.params.id,
       fields: "starred"
     });
@@ -264,71 +266,44 @@ app.get("/api/drive/files/:id/star", async (req, res) => {
   }
 });
 
-// Toggle file star status
+// Update file star status
 app.put("/api/drive/files/:id/star", async (req, res) => {
-  const accessToken = req.cookies.accessToken;
+  const { starred } = req.body;
 
-  if (!accessToken) {
-    return res.status(401).send("No access token found");
+  if (typeof starred !== 'boolean') {
+    return res.status(400).json({ error: "A 'starred' boolean is required in the request body." });
   }
 
   try {
-    oauth2Client.setCredentials({ access_token: accessToken });
-    
-    const drive = google.drive({
-      version: "v3",
-      auth: oauth2Client,
-    });
-
-    // First get current star status
-    const currentStatus = await drive.files.get({
-      fileId: req.params.id,
-      fields: "starred"
-    });
-
-    // Toggle the star status
-    const response = await drive.files.update({
+    const response = await req.drive.files.update({
       fileId: req.params.id,
       requestBody: {
-        starred: !currentStatus.data.starred
+        starred: starred, // Set star status from request body
       },
-      fields: "starred"
+      fields: "id, starred"
     });
 
     res.json({ starred: response.data.starred });
   } catch (error) {
-    console.error("Error toggling file star status:", error);
+    console.error("Error updating file star status:", error);
     if (error.code === 404) {
       res.status(404).json({ error: "File not found" });
     } else {
-      res.status(500).json({ error: "Failed to toggle file star status" });
+      res.status(500).json({ error: "Failed to update file star status" });
     }
   }
 });
 
 // Update file content
 app.put("/api/drive/files/:id/content", async (req, res) => {
-  const accessToken = req.cookies.accessToken;
-
-  if (!accessToken) {
-    return res.status(401).send("No access token found");
-  }
-
   const { content } = req.body;
   if (content === undefined) {
     return res.status(400).json({ error: "Content is required" });
   }
 
   try {
-    oauth2Client.setCredentials({ access_token: accessToken });
-    
-    const drive = google.drive({
-      version: "v3",
-      auth: oauth2Client,
-    });
-
     // First get the file metadata to check mime type
-    const fileMetadata = await drive.files.get({
+    const fileMetadata = await req.drive.files.get({
       fileId: req.params.id,
       fields: "mimeType",
     });
@@ -339,7 +314,7 @@ app.put("/api/drive/files/:id/content", async (req, res) => {
     contentStream.push(null);
 
     // Update the file content using streams
-    const response = await drive.files.update({
+    const response = await req.drive.files.update({
       fileId: req.params.id,
       media: {
         mimeType: fileMetadata.data.mimeType,
@@ -365,26 +340,13 @@ app.put("/api/drive/files/:id/content", async (req, res) => {
 
 // Rename file
 app.put("/api/drive/files/:id", async (req, res) => {
-  const accessToken = req.cookies.accessToken;
-
-  if (!accessToken) {
-    return res.status(401).send("No access token found");
-  }
-
   const { filename } = req.body;
   if (!filename) {
     return res.status(400).json({ error: "Filename is required" });
   }
 
   try {
-    oauth2Client.setCredentials({ access_token: accessToken });
-    
-    const drive = google.drive({
-      version: "v3",
-      auth: oauth2Client,
-    });
-
-    const response = await drive.files.update({
+    const response = await req.drive.files.update({
       fileId: req.params.id,
       requestBody: {
         name: filename
@@ -408,22 +370,9 @@ app.put("/api/drive/files/:id", async (req, res) => {
 
 // Get file content
 app.get("/api/drive/files/:id", async (req, res) => {
-  const accessToken = req.cookies.accessToken;
-
-  if (!accessToken) {
-    return res.status(401).send("No access token found");
-  }
-
   try {
-    oauth2Client.setCredentials({ access_token: accessToken });
-
-    const drive = google.drive({
-      version: "v3",
-      auth: oauth2Client,
-    });
-
     // First get the file metadata to check mime type and name
-    const fileMetadata = await drive.files.get({
+    const fileMetadata = await req.drive.files.get({
       fileId: req.params.id,
       fields: "name, mimeType, starred",
     });
@@ -623,7 +572,7 @@ app.get("/api/drive/files/:id", async (req, res) => {
     }
 
     // Get the file contents
-    const response = await drive.files.get(
+    const response = await req.drive.files.get(
       {
         fileId: req.params.id,
         alt: "media",
